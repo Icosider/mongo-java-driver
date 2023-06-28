@@ -17,6 +17,8 @@
 package com.mongodb.internal;
 
 import com.mongodb.MongoInterruptedException;
+import com.mongodb.internal.async.AsyncRunnable;
+import com.mongodb.internal.async.SingleResultCallback;
 
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.StampedLock;
@@ -33,7 +35,23 @@ public final class Locks {
         });
     }
 
-    public static <V> V withLock(final StampedLock lock, final Supplier<V> supplier) {
+    public static void withLockAsync(final StampedLock lock, final AsyncRunnable runnable,
+            final SingleResultCallback<Void> callback) {
+        long stamp;
+        try {
+            stamp = lock.writeLockInterruptibly();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            callback.onResult(null, new MongoInterruptedException("Interrupted waiting for lock", e));
+            return;
+        }
+
+        runnable.thenAlwaysRunAndFinish(() -> {
+            lock.unlockWrite(stamp);
+        }, callback);
+    }
+
+    public static void withLock(final StampedLock lock, final Runnable runnable) {
         long stamp;
         try {
             stamp = lock.writeLockInterruptibly();
@@ -42,7 +60,7 @@ public final class Locks {
             throw new MongoInterruptedException("Interrupted waiting for lock", e);
         }
         try {
-            return supplier.get();
+            runnable.run();
         } finally {
             lock.unlockWrite(stamp);
         }
@@ -55,14 +73,14 @@ public final class Locks {
     public static <V, E extends Exception> V checkedWithLock(final Lock lock, final CheckedSupplier<V, E> supplier) throws E {
         try {
             lock.lockInterruptibly();
-            try {
-                return supplier.get();
-            } finally {
-                lock.unlock();
-            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new MongoInterruptedException("Interrupted waiting for lock", e);
+        }
+        try {
+            return supplier.get();
+        } finally {
+            lock.unlock();
         }
     }
 
